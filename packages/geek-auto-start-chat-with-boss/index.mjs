@@ -72,8 +72,8 @@ export async function initPuppeteer () {
   }
 }
 
-const bossCookies = readStorageFile('boss-cookies.json')
-const bossLocalStorage = readStorageFile('boss-local-storage.json')
+// const bossCookies = readStorageFile('boss-cookies.json') // Replaced by options.cookies
+// const bossLocalStorage = readStorageFile('boss-local-storage.json') // Replaced by options.localStorageData
 
 const targetCompanyList = readConfigFile('target-company-list.json').filter(it => !!it.trim());
 
@@ -138,7 +138,7 @@ const blockBossNotNewChat = new Set()
 const blockBossNotActive = new Set()
 const blockJobNotSuit = new Set()
 
-async function markJobAsNotSuitInRecommendPage (reasonCode) {
+export async function markJobAsNotSuitInRecommendPage (page, reasonCode) {
   /**
    * @type {{chosenReasonInUi?: { code: number, text: string}}}
    */
@@ -280,7 +280,7 @@ export function testIfJobTitleOrDescriptionSuit (jobInfo) {
   return isJobNameSuit && isJobTypeSuit && isJobDescSuit
 }
 
-async function setFilterCondition (selectedFilters) {
+export async function setFilterCondition (page, selectedFilters) {
   const {
     salaryList = [],
     experienceList = [],
@@ -408,7 +408,7 @@ async function setFilterCondition (selectedFilters) {
   }
 }
 
-async function toRecommendPage (hooks) {
+export async function toRecommendPage (page, hooks, jobFilters) {
   let userInfoPromise = page.waitForResponse((response) => {
       if (response.url().startsWith('https://www.zhipin.com/wapi/zpuser/wap/getUserInfo.json')) {
         return true
@@ -459,11 +459,11 @@ async function toRecommendPage (hooks) {
   let currentExceptJobIndex = INIT_START_EXCEPT_JOB_INDEX
   afterPageLoad: while (true) {
     let expectJobList
-    iterateFilterCondition: for (
-      const filterCondition of combineFiltersWithConstraintsGenerator(
-        anyCombineRecommendJobFilter
-      )
-    ) {
+    const filterConditionsToIterate = (jobFilters && typeof jobFilters === 'object' && Object.keys(jobFilters).length > 0)
+      ? [jobFilters]
+      : combineFiltersWithConstraintsGenerator(anyCombineRecommendJobFilter);
+
+    iterateFilterCondition: for (const filterCondition of filterConditionsToIterate) {
       findInCurrentFilterCondition: while(true) {
         await sleepWithRandomDelay(2500)
 
@@ -498,7 +498,7 @@ async function toRecommendPage (hooks) {
           await sleepWithRandomDelay(2000)
         }
         await sleepWithRandomDelay(3000)
-        await setFilterCondition(filterCondition)
+        await setFilterCondition(page, filterCondition)
 
         try {
           const { targetJobIndex, targetJobData } = await new Promise(async (resolve, reject) => {
@@ -678,7 +678,7 @@ async function toRecommendPage (hooks) {
                     // click prevent recommend button
                     if (jobNotActiveStrategy === MarkAsNotSuitOp.MARK_AS_NOT_SUIT_ON_BOSS) {
                       try {
-                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(MarkAsNotSuitReason.BOSS_INACTIVE)
+                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(page, MarkAsNotSuitReason.BOSS_INACTIVE)
                         await hooks.jobMarkedAsNotSuit.promise(
                           targetJobData,
                           {
@@ -716,7 +716,7 @@ async function toRecommendPage (hooks) {
                     blockJobNotSuit.add(targetJobData.jobInfo.encryptId)
                     if (expectCityNotMatchStrategy === MarkAsNotSuitOp.MARK_AS_NOT_SUIT_ON_BOSS) {
                       try {
-                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(MarkAsNotSuitReason.JOB_CITY_NOT_SUIT)
+                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(page, MarkAsNotSuitReason.JOB_CITY_NOT_SUIT)
                         await hooks.jobMarkedAsNotSuit.promise(
                           targetJobData,
                           {
@@ -753,7 +753,7 @@ async function toRecommendPage (hooks) {
                     blockJobNotSuit.add(targetJobData.jobInfo.encryptId)
                     if (jobNotMatchStrategy === MarkAsNotSuitOp.MARK_AS_NOT_SUIT_ON_BOSS) {
                       try {
-                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(MarkAsNotSuitReason.JOB_NOT_SUIT)
+                        const { chosenReasonInUi } = await markJobAsNotSuitInRecommendPage(page, MarkAsNotSuitReason.JOB_NOT_SUIT)
                         await hooks.jobMarkedAsNotSuit.promise(
                           targetJobData,
                           {
@@ -912,7 +912,8 @@ async function toRecommendPage (hooks) {
   }
 }
 
-export async function mainLoop (hooks) {
+export async function mainLoop (options) {
+  const { cookies, localStorageData, hooks, jobFilters } = options;
   if (!puppeteer) {
     await initPuppeteer()
   }
@@ -928,11 +929,16 @@ export async function mainLoop (hooks) {
     hooks.puppeteerLaunched?.call()
     page = (await browser.pages())[0]
     //set cookies
-    hooks.cookieWillSet?.call(bossCookies)
-    for(let i = 0; i < bossCookies.length; i++){
-      await page.setCookie(bossCookies[i]);
+    hooks.cookieWillSet?.call(cookies)
+    if (Array.isArray(cookies)) {
+      for(let i = 0; i < cookies.length; i++){
+        await page.setCookie(cookies[i]);
+      }
     }
-    await setDomainLocalStorage(browser, localStoragePageUrl, bossLocalStorage)
+    // set local storage
+    if (localStorageData) {
+      await setDomainLocalStorage(browser, localStoragePageUrl, localStorageData)
+    }
     await page.bringToFront()
     await hooks.mainFlowWillLaunch?.callAsync({
       jobNotMatchStrategy,
@@ -941,7 +947,7 @@ export async function mainLoop (hooks) {
       blockJobNotSuit,
       blockBossNotActive,
     })
-    await toRecommendPage(hooks)
+    await toRecommendPage(page, hooks, jobFilters)
     // goto search
 
     // ;await browser.close()
@@ -961,7 +967,7 @@ export async function closeBrowserWindow () {
   page = null
 }
 
-async function storeStorage (page) {
+export async function storeStorage (page) {
   const [
     cookies, localStorage
   ] = await Promise.all([

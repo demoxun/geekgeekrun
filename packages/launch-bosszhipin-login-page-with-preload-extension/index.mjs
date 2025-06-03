@@ -19,21 +19,26 @@ import {
   editThisCookieExtensionPath,
 } from './utils.mjs'
 
-import { EventEmitter } from 'node:events'
-
-export const loginEventBus = new EventEmitter()
-
 const __dirname = url.fileURLToPath(new URL('.', import.meta.url))
 
-export async function main() {
-  await ensureEditThisCookie()
-  const { puppeteer } = await initPuppeteer()
-  const browser = await puppeteer.launch({
-    headless: false,
-    args: [
-      `--load-extension=${editThisCookieExtensionPath}`
-    ]
-  })
+export async function launchLoginProcess(options = {}) {
+  const { loadExtension = true } = options;
+  let browser;
+  try {
+    if (loadExtension) {
+      await ensureEditThisCookie();
+    }
+    const { puppeteer } = await initPuppeteer()
+
+    const launchArgs = [];
+    if (loadExtension) {
+      launchArgs.push(`--load-extension=${editThisCookieExtensionPath}`);
+    }
+
+    browser = await puppeteer.launch({
+      headless: false,
+      args: launchArgs
+    });
 
   const closeAttachedSet = new WeakSet()
   browser.on('targetcreated', async function closeNewTabs(target) {
@@ -52,12 +57,6 @@ export async function main() {
   })
 
   const [page] = await browser.pages();
-
-  page.once('close', async () => {
-    browser.close()
-    const electron = await import('electron')
-    electron.app.quit()
-  })
 
   const { dispose: disposeNavigationLock } = await blockNavigation(page, (req) => !req.url().startsWith('https://www.zhipin.com'))
   await page.goto('https://www.zhipin.com/web/user/');
@@ -108,12 +107,18 @@ export async function main() {
     }
     await sleep(2000)
     const cookies = await page.cookies()
-    loginEventBus.emit(
-      'cookie-collected',
-      cookies
-    )
-    return writeStorageFile('boss-cookies.json', cookies)
-  }).catch((err) => {
-    console.log(err)
-  })
+    // loginEventBus.emit(
+    //   'cookie-collected',
+    //   cookies
+    // )
+    // await writeStorageFile('boss-cookies.json', cookies)
+    disposeNavigationLock()
+    return { browser, page, cookies }
+  } catch (err) {
+    if (browser) {
+      await browser.close()
+    }
+    console.error('Error during login process:', err)
+    throw err
+  }
 }
